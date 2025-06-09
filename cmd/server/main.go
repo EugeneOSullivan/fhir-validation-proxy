@@ -7,7 +7,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"time"
 
 	"fhir-validation-proxy/internal/validator"
 )
@@ -61,31 +63,52 @@ func main() {
 			}
 			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "application/fhir+json")
-			json.NewEncoder(w).Encode(operationOutcome)
+			if err := json.NewEncoder(w).Encode(operationOutcome); err != nil {
+				http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+			}
 			return
 		}
 
 		// If valid, forward to actual FHIR server (if configured)
 		fhirURL := os.Getenv("FHIR_SERVER_URL")
 		if fhirURL != "" {
-			proxyResp, err := http.Post(fhirURL, "application/fhir+json", bytes.NewReader(body))
+			parsedURL, err := url.ParseRequestURI(fhirURL)
+			if err != nil {
+				http.Error(w, "Invalid FHIR_SERVER_URL", http.StatusInternalServerError)
+				return
+			}
+			proxyResp, err := http.Post(parsedURL.String(), "application/fhir+json", bytes.NewReader(body))
 			if err != nil {
 				http.Error(w, "Failed to forward to FHIR server", http.StatusBadGateway)
 				return
 			}
-			defer proxyResp.Body.Close()
+			defer func() {
+				if cerr := proxyResp.Body.Close(); cerr != nil {
+					log.Printf("Failed to close proxy response body: %v", cerr)
+				}
+			}()
 			w.Header().Set("Content-Type", proxyResp.Header.Get("Content-Type"))
 			w.WriteHeader(proxyResp.StatusCode)
-			io.Copy(w, proxyResp.Body)
+			if _, err := io.Copy(w, proxyResp.Body); err != nil {
+				log.Printf("Failed to copy proxy response body: %v", err)
+			}
 			return
 		}
 
 		// If no FHIR server configured, echo back the valid resource
 		w.Header().Set("Content-Type", "application/fhir+json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(resource)
+		if err := json.NewEncoder(w).Encode(resource); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
 	})
 
 	log.Println("Validator running at http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	srv := &http.Server{
+		Addr:         ":8080",
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }

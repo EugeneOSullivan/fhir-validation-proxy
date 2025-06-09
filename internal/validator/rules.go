@@ -9,8 +9,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ExtraRules holds additional validation rules loaded from YAML.
 var ExtraRules = map[string]map[string]FieldRule{}
 
+// FieldRule represents a validation rule for a FHIR field.
 type FieldRule struct {
 	Min           int           `yaml:"min"`
 	Max           int           `yaml:"max"`
@@ -20,7 +22,9 @@ type FieldRule struct {
 	MustSupport   bool          `yaml:"mustSupport"`
 }
 
+// LoadRules loads extra validation rules from a YAML file.
 func LoadRules(filepath string) error {
+	// #nosec G304 -- filepath is controlled by caller and only YAML files are expected
 	data, err := os.ReadFile(filepath)
 	if err != nil {
 		return err
@@ -28,6 +32,7 @@ func LoadRules(filepath string) error {
 	return yaml.Unmarshal(data, &ExtraRules)
 }
 
+// ApplyExtraRules applies extra validation rules to a resource.
 func ApplyExtraRules(resourceType string, resource map[string]interface{}) []string {
 	errors := []string{}
 

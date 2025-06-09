@@ -3,7 +3,7 @@
 BINARY=fhir-validation-proxy
 CMD=./cmd/server
 
-.PHONY: all build run test lint clean
+.PHONY: all build run test lint lint-fix clean
 
 all: build
 
@@ -17,7 +17,10 @@ test:
 	go test ./...
 
 lint:
-	golangci-lint run || echo 'Install golangci-lint for linting.'
+	golangci-lint run ./...
+
+lint-fix:
+	golangci-lint run --fix ./...
 
 clean:
 	rm -f $(BINARY) 

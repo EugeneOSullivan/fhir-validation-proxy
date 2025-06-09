@@ -1,3 +1,4 @@
+// Package api provides HTTP handlers for the FHIR validation proxy.
 package api
 
 import (

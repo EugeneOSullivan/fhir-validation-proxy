@@ -7,6 +7,7 @@ import (
 	"net/http"
 )
 
+// ValidateHandler handles FHIR resource validation requests.
 func ValidateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOperationOutcome(w, http.StatusMethodNotAllowed, "Only POST allowed")
@@ -31,14 +32,17 @@ func ValidateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/fhir+json")
 	if result.Valid {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"resourceType": "OperationOutcome",
 			"issue": []map[string]interface{}{{
 				"severity":    "information",
 				"code":        "informational",
 				"diagnostics": "Validation successful",
 			}},
-		})
+		}); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+			return
+		}
 	} else {
 		w.WriteHeader(http.StatusBadRequest)
 		issues := []map[string]interface{}{}
@@ -49,22 +53,27 @@ func ValidateHandler(w http.ResponseWriter, r *http.Request) {
 				"diagnostics": msg,
 			})
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"resourceType": "OperationOutcome",
 			"issue":        issues,
-		})
+		}); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+			return
+		}
 	}
 }
 
 func writeOperationOutcome(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/fhir+json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"resourceType": "OperationOutcome",
 		"issue": []map[string]interface{}{{
 			"severity":    "error",
 			"code":        "invalid",
 			"diagnostics": message,
 		}},
-	})
+	}); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }

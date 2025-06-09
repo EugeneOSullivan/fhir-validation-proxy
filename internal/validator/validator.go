@@ -1,17 +1,21 @@
-// internal/validator/validator.go
+// Package validator provides FHIR resource validation logic.
 package validator
+
+// internal/validator/validator.go
 
 import (
 	"fmt"
 	"strings"
 )
 
+// ValidationResult represents the result of validating a FHIR resource.
 type ValidationResult struct {
 	Valid   bool
 	Errors  []string
 	Outcome map[string]interface{}
 }
 
+// Validate validates a FHIR resource and returns a ValidationResult.
 func Validate(resource map[string]interface{}) ValidationResult {
 	errors := ApplyExtraRules(resource["resourceType"].(string), resource)
 
@@ -49,6 +53,7 @@ func Validate(resource map[string]interface{}) ValidationResult {
 	}
 }
 
+// ValidateTransactionBundle validates a transaction bundle and returns errors.
 func ValidateTransactionBundle(bundle map[string]interface{}) []string {
 	errs := []string{}
 
