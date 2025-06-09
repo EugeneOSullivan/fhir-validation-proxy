@@ -1,0 +1,10 @@
+transaction:
+  default:
+    requiredResources:
+      - resourceType: Provenance
+      - resourceType: Patient
+    mustReference:
+      - source: Provenance
+        target: Patient
+
+# may need to add rules on resources we wont accept, such as Org

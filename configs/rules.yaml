@@ -1,0 +1,15 @@
+Patient:
+  birthDate:
+    min: 1
+    max: 1
+  gender:
+    allowedValues: ["male", "female", "other", "unknown"]
+  active:
+    fixedValue: true
+  address:
+    min: 1
+  address.postalCode:
+    min: 1
+    pattern: "^[A-Z]{1,2}[0-9R][0-9A-Z]? ?[0-9][A-Z]{2}$"
+  name.family:
+    min: 1
