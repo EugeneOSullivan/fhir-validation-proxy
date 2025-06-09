@@ -68,6 +68,17 @@ func fieldExists(resource map[string]interface{}, fullPath string) bool {
 			return false
 		}
 
+		if i == len(parts)-1 {
+			switch v := val.(type) {
+			case map[string]interface{}:
+				return true
+			case []interface{}:
+				return len(v) > 0
+			default:
+				return true
+			}
+		}
+
 		switch v := val.(type) {
 		case map[string]interface{}:
 			current = v
@@ -75,20 +86,18 @@ func fieldExists(resource map[string]interface{}, fullPath string) bool {
 			if len(v) == 0 {
 				return false
 			}
-			if i+1 >= len(parts) {
-				return true
-			}
-			next := parts[i+1]
+			// If there are more parts, check if any element matches the rest of the path
+			remainingPath := strings.Join(parts[i+1:], ".")
 			for _, item := range v {
 				if itemMap, ok := item.(map[string]interface{}); ok {
-					if _, ok := itemMap[next]; ok {
+					if fieldExists(itemMap, parts[0]+"."+remainingPath) {
 						return true
 					}
 				}
 			}
 			return false
 		default:
-			return true
+			return false
 		}
 	}
 	return true
@@ -180,22 +189,45 @@ func fieldMatchesPattern(resource map[string]interface{}, fullPath string, patte
 		part := parts[i]
 		val, ok := current[part]
 		if !ok {
+			fmt.Printf("Field %s not found at path %s\n", part, strings.Join(parts[:i+1], "."))
 			return false
 		}
 
 		if i == len(parts)-1 {
 			strVal, ok := val.(string)
 			if !ok {
+				fmt.Printf("Field %s is not a string, got %T\n", part, val)
 				return false
 			}
-			re := regexp.MustCompile(pattern)
-			return re.MatchString(strVal)
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				fmt.Printf("Invalid pattern %s: %v\n", pattern, err)
+				return false
+			}
+			matches := re.MatchString(strVal)
+			fmt.Printf("Testing pattern %s against value %q: %v\n", pattern, strVal, matches)
+			return matches
 		}
 
 		switch v := val.(type) {
 		case map[string]interface{}:
 			current = v
+		case []interface{}:
+			if len(v) == 0 {
+				return false
+			}
+			// If there are more parts, check if any element matches the rest of the path
+			remainingPath := strings.Join(parts[i+1:], ".")
+			for _, item := range v {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					if fieldMatchesPattern(itemMap, parts[0]+"."+remainingPath, pattern) {
+						return true
+					}
+				}
+			}
+			return false
 		default:
+			fmt.Printf("Unexpected type %T at path %s\n", v, strings.Join(parts[:i+1], "."))
 			return false
 		}
 	}
