@@ -29,5 +29,3 @@ jobs:
         name: coverage-report
         path: coverage.html
         retention-days: 14
-    - name: Run tests
-      run: go test ./...
