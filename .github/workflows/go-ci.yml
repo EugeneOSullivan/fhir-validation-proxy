@@ -38,6 +38,5 @@ jobs:
       with:
         file: ./coverage.out
         fail_ci_if_error: true
-        token: ${{ secrets.GITHUB_TOKEN }}
     - name: Run tests
       run: go test ./...
