@@ -29,10 +29,15 @@ jobs:
         name: coverage-report
         path: coverage.html
         retention-days: 14
+    - name: Download coverage artifact (for Codecov)
+      uses: actions/download-artifact@v4
+      with:
+        name: coverage-report
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
       with:
         file: ./coverage.out
         fail_ci_if_error: true
+        token: ${{ secrets.GITHUB_TOKEN }}
     - name: Run tests
       run: go test ./...
