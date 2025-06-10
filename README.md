@@ -1,5 +1,8 @@
 # FHIR Validation Proxy
 
+[![Go CI](https://github.com/eugeneosullivan/fhir-validation-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/eugeneosullivan/fhir-validation-proxy/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/eugeneosullivan/fhir-validation-proxy/branch/main/graph/badge.svg)](https://codecov.io/gh/eugeneosullivan/fhir-validation-proxy)
+
 A Go-based proxy server for validating FHIR resources against custom rules, profiles, and recipes before forwarding to a FHIR server.
 
 ## Features

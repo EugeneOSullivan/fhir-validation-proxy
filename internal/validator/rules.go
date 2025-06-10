@@ -121,11 +121,20 @@ func countField(resource map[string]interface{}, fullPath string) int {
 
 		switch v := val.(type) {
 		case []interface{}:
+			if v == nil {
+				return 0
+			}
 			return len(v)
 		case map[string]interface{}:
 			current = v
 		default:
-			return 1
+			if i == len(parts)-1 {
+				if val == nil {
+					return 0
+				}
+				return 1
+			}
+			return 0
 		}
 	}
 	return 0
@@ -133,6 +142,13 @@ func countField(resource map[string]interface{}, fullPath string) int {
 
 func fieldHasFixedValue(resource map[string]interface{}, fullPath string, expected interface{}) bool {
 	parts := strings.Split(fullPath, ".")
+	if len(parts) == 1 {
+		val, ok := resource[parts[0]]
+		if !ok {
+			return false
+		}
+		return val == expected
+	}
 	current := resource
 
 	for i := 1; i < len(parts); i++ {
