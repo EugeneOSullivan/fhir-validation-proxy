@@ -1,0 +1,83 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: fhir-validation-proxy
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/execution-environment: gen2
+    run.googleapis.com/cpu-throttling: "false"
+    run.googleapis.com/startup-cpu-boost: "true"
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "100"
+        autoscaling.knative.dev/targetCPUUtilization: "70"
+        autoscaling.knative.dev/targetConcurrency: "80"
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/vpc-access-connector: "projects/PROJECT_ID/locations/REGION/connectors/CONNECTOR_NAME"
+        run.googleapis.com/vpc-access-egress: "all"
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      containers:
+      - image: gcr.io/PROJECT_ID/fhir-validation-proxy:latest
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+        env:
+        - name: GOOGLE_CLOUD_PROJECT
+          value: "PROJECT_ID"
+        - name: FHIR_STORE_LOCATION
+          value: "REGION"
+        - name: FHIR_STORE_DATASET
+          value: "DATASET_ID"
+        - name: FHIR_STORE_NAME
+          value: "STORE_NAME"
+        - name: REQUIRE_AUTHENTICATION
+          value: "true"
+        - name: AUDIT_LOGGING
+          value: "true"
+        - name: ENABLE_METRICS
+          value: "true"
+        - name: SERVER_PORT
+          value: "8080"
+        - name: SERVER_READ_TIMEOUT
+          value: "30s"
+        - name: SERVER_WRITE_TIMEOUT
+          value: "30s"
+        - name: SERVER_IDLE_TIMEOUT
+          value: "60s"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1001
+          capabilities:
+            drop:
+            - ALL
+      serviceAccountName: fhir-validation-proxy@PROJECT_ID.iam.gserviceaccount.com 

@@ -5,12 +5,20 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
 // ExtraRules holds additional validation rules loaded from YAML.
 var ExtraRules = map[string]map[string]FieldRule{}
+
+// Cache for loaded rules to improve performance
+var (
+	rulesCache     = map[string]map[string]map[string]FieldRule{}
+	rulesCacheOnce sync.Once
+	rulesCacheMu   sync.RWMutex
+)
 
 // FieldRule represents a validation rule for a FHIR field.
 type FieldRule struct {
@@ -24,12 +32,50 @@ type FieldRule struct {
 
 // LoadRules loads extra validation rules from a YAML file.
 func LoadRules(filepath string) error {
+	// Check cache first
+	rulesCacheMu.RLock()
+	if cached, exists := rulesCache[filepath]; exists {
+		ExtraRules = cached
+		rulesCacheMu.RUnlock()
+		return nil
+	}
+	rulesCacheMu.RUnlock()
+
+	// Load from file if not cached
 	// #nosec G304 -- filepath is controlled by caller and only YAML files are expected
 	data, err := os.ReadFile(filepath)
 	if err != nil {
 		return err
 	}
-	return yaml.Unmarshal(data, &ExtraRules)
+
+	var rules map[string]map[string]FieldRule
+	if err := yaml.Unmarshal(data, &rules); err != nil {
+		return err
+	}
+
+	// Cache the loaded rules
+	rulesCacheMu.Lock()
+	rulesCache[filepath] = rules
+	ExtraRules = rules
+	rulesCacheMu.Unlock()
+
+	return nil
+}
+
+// GetCachedRules returns cached rules for a filepath
+func GetCachedRules(filepath string) (map[string]map[string]FieldRule, bool) {
+	rulesCacheMu.RLock()
+	defer rulesCacheMu.RUnlock()
+	rules, exists := rulesCache[filepath]
+	return rules, exists
+}
+
+// ClearRulesCache clears the rules cache (useful for testing)
+func ClearRulesCache() {
+	rulesCacheMu.Lock()
+	defer rulesCacheMu.Unlock()
+	rulesCache = map[string]map[string]map[string]FieldRule{}
+	ExtraRules = map[string]map[string]FieldRule{}
 }
 
 // ApplyExtraRules applies extra validation rules to a resource.

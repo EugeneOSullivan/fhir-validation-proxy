@@ -11,6 +11,7 @@ import (
 
 	"fhir-validation-proxy/internal/config"
 	"fhir-validation-proxy/internal/validator"
+
 	"github.com/gorilla/mux"
 )
 
@@ -36,30 +37,37 @@ func NewFHIRProxy(cfg *config.Config) *FHIRProxy {
 func (p *FHIRProxy) SetupRoutes(router *mux.Router) {
 	// Legacy validation endpoint
 	router.HandleFunc("/validate", p.ValidateHandler).Methods("POST")
-	
+
 	// FHIR R4 endpoints
 	fhirRouter := router.PathPrefix("/fhir").Subrouter()
-	
+
 	// System operations (must come before resource operations)
 	fhirRouter.HandleFunc("/$process-message", p.HandleProcessMessage).Methods("POST")
 	fhirRouter.HandleFunc("/metadata", p.HandleCapabilityStatement).Methods("GET")
-	
+
 	// Bundle operations
 	fhirRouter.HandleFunc("", p.HandleBundleTransaction).Methods("POST")
-	
+
 	// Resource operations
 	fhirRouter.HandleFunc("/{resourceType}", p.HandleResourceList).Methods("GET", "POST")
 	fhirRouter.HandleFunc("/{resourceType}/_search", p.HandleResourceSearch).Methods("GET", "POST")
 	fhirRouter.HandleFunc("/{resourceType}/{id}", p.HandleResourceInstance).Methods("GET", "PUT", "DELETE")
 	fhirRouter.HandleFunc("/{resourceType}/{id}/_history", p.HandleResourceHistory).Methods("GET")
 	fhirRouter.HandleFunc("/{resourceType}/{id}/_history/{vid}", p.HandleResourceVersion).Methods("GET")
-	
-	// Health check
+
+	// Health check and metrics
 	router.HandleFunc("/health", p.HealthCheck).Methods("GET")
+	router.HandleFunc("/metrics", p.MetricsHandler).Methods("GET")
 }
 
 // ValidateHandler handles the legacy validation endpoint
 func (p *FHIRProxy) ValidateHandler(w http.ResponseWriter, r *http.Request) {
+	// Enterprise security: Check request size
+	if r.ContentLength > validator.MaxRequestSize {
+		p.writeOperationOutcome(w, http.StatusRequestEntityTooLarge, "Request too large")
+		return
+	}
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		p.writeOperationOutcome(w, http.StatusBadRequest, "Failed to read request body")
@@ -73,6 +81,11 @@ func (p *FHIRProxy) ValidateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := validator.Validate(resource)
+
+	// Add enterprise monitoring headers
+	w.Header().Set("X-Validation-Duration", result.Duration.String())
+	w.Header().Set("X-Resource-Type", result.ResourceType)
+
 	p.writeValidationResult(w, result)
 }
 
@@ -121,7 +134,7 @@ func (p *FHIRProxy) HandleResourceHistory(w http.ResponseWriter, r *http.Request
 	vars := mux.Vars(r)
 	resourceType := vars["resourceType"]
 	resourceID := vars["id"]
-	
+
 	if p.baseURL == "" {
 		p.writeOperationOutcome(w, http.StatusServiceUnavailable, "FHIR server not configured")
 		return
@@ -137,7 +150,7 @@ func (p *FHIRProxy) HandleResourceVersion(w http.ResponseWriter, r *http.Request
 	resourceType := vars["resourceType"]
 	resourceID := vars["id"]
 	versionID := vars["vid"]
-	
+
 	if p.baseURL == "" {
 		p.writeOperationOutcome(w, http.StatusServiceUnavailable, "FHIR server not configured")
 		return
@@ -311,7 +324,7 @@ func (p *FHIRProxy) handleResourceCreate(w http.ResponseWriter, r *http.Request,
 
 	// Validate resource type matches URL
 	if resource["resourceType"] != resourceType {
-		p.writeOperationOutcome(w, http.StatusBadRequest, 
+		p.writeOperationOutcome(w, http.StatusBadRequest,
 			fmt.Sprintf("Resource type mismatch: expected %s, got %s", resourceType, resource["resourceType"]))
 		return
 	}
@@ -399,7 +412,7 @@ func (p *FHIRProxy) handleResourceSearch(w http.ResponseWriter, r *http.Request,
 	if r.URL.RawQuery != "" {
 		targetURL += "?" + r.URL.RawQuery
 	}
-	
+
 	p.proxyRequest(w, r, targetURL)
 }
 
@@ -468,4 +481,23 @@ func (p *FHIRProxy) writeOperationOutcome(w http.ResponseWriter, status int, mes
 			"diagnostics": message,
 		}},
 	})
+}
+
+// MetricsHandler provides validation metrics for monitoring
+func (p *FHIRProxy) MetricsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	metrics := validator.GetMetrics()
+	metricsData := map[string]interface{}{
+		"total_requests":      metrics.TotalRequests,
+		"valid_requests":      metrics.ValidRequests,
+		"invalid_requests":    metrics.InvalidRequests,
+		"success_rate":        float64(metrics.ValidRequests) / float64(metrics.TotalRequests) * 100,
+		"average_duration_ms": metrics.AverageDuration.Milliseconds(),
+		"last_request_time":   metrics.LastRequestTime.Format(time.RFC3339),
+		"uptime":              time.Since(metrics.LastRequestTime).String(),
+	}
+
+	json.NewEncoder(w).Encode(metricsData)
 }

@@ -6,31 +6,92 @@ package validator
 import (
 	"fmt"
 	"strings"
+	"time"
 )
+
+// Enterprise-scale limits
+const (
+	MaxRequestSize    = 10 * 1024 * 1024 // 10MB
+	MaxBundleEntries  = 1000
+	MaxValidationTime = 30 // seconds
+)
+
+// Simple metrics for enterprise monitoring
+type ValidationMetrics struct {
+	TotalRequests   int64
+	ValidRequests   int64
+	InvalidRequests int64
+	AverageDuration time.Duration
+	LastRequestTime time.Time
+}
+
+var metrics = &ValidationMetrics{}
+
+// GetMetrics returns current validation metrics
+func GetMetrics() *ValidationMetrics {
+	return metrics
+}
 
 // ValidationResult represents the result of validating a FHIR resource.
 type ValidationResult struct {
-	Valid   bool
-	Errors  []string
-	Outcome map[string]interface{}
+	Valid        bool
+	Errors       []string
+	Outcome      map[string]interface{}
+	Duration     time.Duration
+	ResourceType string
 }
 
 // Validate validates a FHIR resource and returns a ValidationResult.
 func Validate(resource map[string]interface{}) ValidationResult {
-	errors := ApplyExtraRules(resource["resourceType"].(string), resource)
+	start := time.Now()
+	defer func() {
+		metrics.TotalRequests++
+		metrics.LastRequestTime = time.Now()
+	}()
 
-	if resource["resourceType"] == "Bundle" {
-		bundleType, ok := resource["type"].(string)
-		if ok {
-			if bundleType == "transaction" {
-				errors = append(errors, ValidateTransactionBundle(resource)...)
-			} else if bundleType == "message" {
-				errors = append(errors, ValidateMessageBundle(resource)...)
-			}
+	// Enterprise security: Check resource size and limits
+	if err := validateResourceLimits(resource); err != nil {
+		duration := time.Since(start)
+		metrics.InvalidRequests++
+		return ValidationResult{
+			Valid:  false,
+			Errors: []string{err.Error()},
+			Outcome: map[string]interface{}{
+				"resourceType": "OperationOutcome",
+				"issue": []map[string]interface{}{
+					{
+						"severity":    "error",
+						"code":        "invalid",
+						"diagnostics": err.Error(),
+					},
+				},
+			},
+			Duration: duration,
 		}
 	}
 
+	errors := ApplyExtraRules(resource["resourceType"].(string), resource)
+
+	if resource["resourceType"] == "Bundle" && resource["type"] == "transaction" {
+		errors = append(errors, ValidateTransactionBundle(resource)...) // new logic
+	}
+
 	valid := len(errors) == 0
+	duration := time.Since(start)
+
+	// Update metrics
+	if valid {
+		metrics.ValidRequests++
+	} else {
+		metrics.InvalidRequests++
+	}
+
+	// Update average duration
+	if metrics.TotalRequests > 0 {
+		metrics.AverageDuration = time.Duration((int64(metrics.AverageDuration)*(metrics.TotalRequests-1) + int64(duration)) / metrics.TotalRequests)
+	} else {
+		metrics.AverageDuration = duration
+	}
 
 	outcome := map[string]interface{}{
 		"resourceType": "OperationOutcome",
@@ -53,11 +114,37 @@ func Validate(resource map[string]interface{}) ValidationResult {
 		}
 	}
 
-	return ValidationResult{
-		Valid:   valid,
-		Errors:  errors,
-		Outcome: outcome,
+	resourceType := "Unknown"
+	if rt, ok := resource["resourceType"].(string); ok {
+		resourceType = rt
 	}
+
+	return ValidationResult{
+		Valid:        valid,
+		Errors:       errors,
+		Outcome:      outcome,
+		Duration:     duration,
+		ResourceType: resourceType,
+	}
+}
+
+// validateResourceLimits checks enterprise-scale limits
+func validateResourceLimits(resource map[string]interface{}) error {
+	// Check bundle entry limits
+	if resource["resourceType"] == "Bundle" {
+		if entries, ok := resource["entry"].([]interface{}); ok {
+			if len(entries) > MaxBundleEntries {
+				return fmt.Errorf("bundle contains too many entries: %d (max: %d)", len(entries), MaxBundleEntries)
+			}
+		}
+	}
+
+	// Additional enterprise checks can be added here
+	// - Resource depth limits
+	// - Reference count limits
+	// - Custom field limits
+
+	return nil
 }
 
 // ValidateTransactionBundle validates a transaction bundle and returns errors.
@@ -95,26 +182,26 @@ func ValidateTransactionBundle(bundle map[string]interface{}) []string {
 				}
 			}
 		}
-		
+
 		for _, req := range recipe.RequiredResources {
 			count := resourceCounts[req.ResourceType]
-			
+
 			minCount := req.MinCount
 			if minCount == 0 {
 				minCount = 1 // Default minimum is 1
 			}
-			
+
 			if count < minCount {
-				errs = append(errs, fmt.Sprintf("Insufficient %s resources: found %d, minimum %d required", 
+				errs = append(errs, fmt.Sprintf("Insufficient %s resources: found %d, minimum %d required",
 					req.ResourceType, count, minCount))
 			}
-			
+
 			if req.MaxCount > 0 && count > req.MaxCount {
-				errs = append(errs, fmt.Sprintf("Too many %s resources: found %d, maximum %d allowed", 
+				errs = append(errs, fmt.Sprintf("Too many %s resources: found %d, maximum %d allowed",
 					req.ResourceType, count, req.MaxCount))
 			}
 		}
-		
+
 		// Check forbidden resources
 		for _, forbidden := range recipe.ForbiddenResources {
 			if resourceCounts[forbidden] > 0 {
@@ -252,22 +339,22 @@ func ValidateMessageBundle(bundle map[string]interface{}) []string {
 				}
 			}
 		}
-		
+
 		for _, req := range recipe.RequiredResources {
 			count := resourceCounts[req.ResourceType]
-			
+
 			minCount := req.MinCount
 			if minCount == 0 {
 				minCount = 1
 			}
-			
+
 			if count < minCount {
-				errs = append(errs, fmt.Sprintf("Insufficient %s resources in message: found %d, minimum %d required", 
+				errs = append(errs, fmt.Sprintf("Insufficient %s resources in message: found %d, minimum %d required",
 					req.ResourceType, count, minCount))
 			}
-			
+
 			if req.MaxCount > 0 && count > req.MaxCount {
-				errs = append(errs, fmt.Sprintf("Too many %s resources in message: found %d, maximum %d allowed", 
+				errs = append(errs, fmt.Sprintf("Too many %s resources in message: found %d, maximum %d allowed",
 					req.ResourceType, count, req.MaxCount))
 			}
 		}
@@ -301,7 +388,7 @@ func ValidateMessageBundle(bundle map[string]interface{}) []string {
 				}
 			}
 		}
-		
+
 		for _, rule := range recipe.MustReference {
 			valid := false
 			for _, src := range resourceMap[rule.Source] {
