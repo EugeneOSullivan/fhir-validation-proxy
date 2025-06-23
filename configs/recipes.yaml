@@ -2,9 +2,90 @@ transaction:
   default:
     requiredResources:
       - resourceType: Provenance
+        minCount: 1
+        maxCount: 1
       - resourceType: Patient
+        minCount: 1
+        maxCount: 5
     mustReference:
       - source: Provenance
         target: Patient
+    forbiddenResources:
+      - Organization
+      - Device
+    dataQuality:
+      - field: Patient.identifier
+        validation: required
+      - field: Provenance.recorded
+        validation: not-future
 
-# may need to add rules on resources we wont accept, such as Org
+  clinical-document:
+    requiredResources:
+      - resourceType: Patient
+        minCount: 1
+        maxCount: 1
+      - resourceType: Composition
+        minCount: 1
+        maxCount: 1
+        validation: clinical-composition
+      - resourceType: Practitioner
+        minCount: 1
+    conditionalRules:
+      - when: "Composition.type.coding.code = '11488-4'"
+        require: 
+          - DocumentReference
+      - when: "Composition.type.coding.code = '18842-5'"
+        require:
+          - Observation
+          - DiagnosticReport
+    mustReference:
+      - source: Composition
+        target: Patient
+      - source: Composition
+        target: Practitioner
+    dataQuality:
+      - field: Patient.identifier
+        validation: nhs-number
+      - field: Composition.date
+        validation: not-future
+      - field: Composition.status
+        allowedValues: ["final", "amended"]
+
+  medication-reconciliation:
+    requiredResources:
+      - resourceType: Patient
+        minCount: 1
+        maxCount: 1
+      - resourceType: MedicationStatement
+        minCount: 1
+      - resourceType: Provenance
+        minCount: 1
+    mustReference:
+      - source: MedicationStatement
+        target: Patient
+      - source: Provenance
+        target: MedicationStatement
+    dataQuality:
+      - field: MedicationStatement.status
+        allowedValues: ["active", "completed", "stopped"]
+      - field: MedicationStatement.effectiveDateTime
+        validation: not-future
+
+message:
+  default:
+    requiredResources:
+      - resourceType: MessageHeader
+        minCount: 1
+        maxCount: 1
+      - resourceType: Patient
+        minCount: 1
+    mustReference:
+      - source: MessageHeader
+        target: Patient
+    messageValidation:
+      - field: eventCoding
+        required: true
+      - field: source
+        required: true
+      - field: focus
+        required: true

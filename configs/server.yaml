@@ -1,0 +1,29 @@
+server:
+  port: 8080
+  read_timeout: 10s
+  write_timeout: 10s
+  idle_timeout: 60s
+
+google_cloud:
+  project_id: "${GOOGLE_CLOUD_PROJECT}"
+  location: "${GOOGLE_CLOUD_LOCATION}"
+  dataset_id: "${GOOGLE_CLOUD_DATASET_ID}"
+  fhir_store_id: "${GOOGLE_CLOUD_FHIR_STORE_ID}"
+  service_account_key: "${GOOGLE_APPLICATION_CREDENTIALS}"
+  base_url: "${FHIR_SERVER_URL}"
+
+validation:
+  strict_mode: true
+  profile_validation: true
+  custom_rules_path: "configs/rules.yaml"
+  profiles_path: "configs/profiles"
+  recipes_path: "configs/recipes.yaml"
+
+security:
+  require_authentication: false
+  audit_logging: true
+  encryption_required: false
+
+monitoring:
+  enable_metrics: true
+  metrics_port: 9090

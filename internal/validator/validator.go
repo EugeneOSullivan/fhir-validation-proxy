@@ -19,8 +19,15 @@ type ValidationResult struct {
 func Validate(resource map[string]interface{}) ValidationResult {
 	errors := ApplyExtraRules(resource["resourceType"].(string), resource)
 
-	if resource["resourceType"] == "Bundle" && resource["type"] == "transaction" {
-		errors = append(errors, ValidateTransactionBundle(resource)...) // new logic
+	if resource["resourceType"] == "Bundle" {
+		bundleType, ok := resource["type"].(string)
+		if ok {
+			if bundleType == "transaction" {
+				errors = append(errors, ValidateTransactionBundle(resource)...)
+			} else if bundleType == "message" {
+				errors = append(errors, ValidateMessageBundle(resource)...)
+			}
+		}
 	}
 
 	valid := len(errors) == 0
@@ -66,7 +73,7 @@ func ValidateTransactionBundle(bundle map[string]interface{}) []string {
 		errs = append(errs, "Missing required Provenance resource in transaction")
 	}
 
-	recipe, hasRecipe := Recipes["default"]
+	recipe, hasRecipe := Recipes["transaction:default"]
 	if hasRecipe {
 		found := map[string]bool{}
 		for _, e := range entries {
@@ -78,9 +85,40 @@ func ValidateTransactionBundle(bundle map[string]interface{}) []string {
 				}
 			}
 		}
+		resourceCounts := map[string]int{}
+		for _, e := range entries {
+			if entry, ok := e.(map[string]interface{}); ok {
+				if res, ok := entry["resource"].(map[string]interface{}); ok {
+					if rt, ok := res["resourceType"].(string); ok {
+						resourceCounts[rt]++
+					}
+				}
+			}
+		}
+		
 		for _, req := range recipe.RequiredResources {
-			if !found[req.ResourceType] {
-				errs = append(errs, "Missing required resource in bundle: "+req.ResourceType)
+			count := resourceCounts[req.ResourceType]
+			
+			minCount := req.MinCount
+			if minCount == 0 {
+				minCount = 1 // Default minimum is 1
+			}
+			
+			if count < minCount {
+				errs = append(errs, fmt.Sprintf("Insufficient %s resources: found %d, minimum %d required", 
+					req.ResourceType, count, minCount))
+			}
+			
+			if req.MaxCount > 0 && count > req.MaxCount {
+				errs = append(errs, fmt.Sprintf("Too many %s resources: found %d, maximum %d allowed", 
+					req.ResourceType, count, req.MaxCount))
+			}
+		}
+		
+		// Check forbidden resources
+		for _, forbidden := range recipe.ForbiddenResources {
+			if resourceCounts[forbidden] > 0 {
+				errs = append(errs, fmt.Sprintf("Forbidden resource type in bundle: %s", forbidden))
 			}
 		}
 
@@ -186,4 +224,113 @@ func referencesExist(refs []string, bundle map[string]interface{}) []string {
 		}
 	}
 	return missing
+}
+
+// ValidateMessageBundle validates a message bundle
+func ValidateMessageBundle(bundle map[string]interface{}) []string {
+	errs := []string{}
+
+	entries, ok := bundle["entry"].([]interface{})
+	if !ok {
+		return []string{"Invalid or missing bundle entries"}
+	}
+
+	// Check for MessageHeader
+	if !hasMessageHeader(entries) {
+		errs = append(errs, "Missing required MessageHeader resource in message bundle")
+	}
+
+	recipe, hasRecipe := Recipes["message:default"]
+	if hasRecipe {
+		resourceCounts := map[string]int{}
+		for _, e := range entries {
+			if entry, ok := e.(map[string]interface{}); ok {
+				if res, ok := entry["resource"].(map[string]interface{}); ok {
+					if rt, ok := res["resourceType"].(string); ok {
+						resourceCounts[rt]++
+					}
+				}
+			}
+		}
+		
+		for _, req := range recipe.RequiredResources {
+			count := resourceCounts[req.ResourceType]
+			
+			minCount := req.MinCount
+			if minCount == 0 {
+				minCount = 1
+			}
+			
+			if count < minCount {
+				errs = append(errs, fmt.Sprintf("Insufficient %s resources in message: found %d, minimum %d required", 
+					req.ResourceType, count, minCount))
+			}
+			
+			if req.MaxCount > 0 && count > req.MaxCount {
+				errs = append(errs, fmt.Sprintf("Too many %s resources in message: found %d, maximum %d allowed", 
+					req.ResourceType, count, req.MaxCount))
+			}
+		}
+
+		// Validate message-specific rules
+		for _, e := range entries {
+			if entry, ok := e.(map[string]interface{}); ok {
+				if res, ok := entry["resource"].(map[string]interface{}); ok {
+					if res["resourceType"] == "MessageHeader" {
+						for _, rule := range recipe.MessageValidation {
+							if rule.Required {
+								// Check if field exists directly on the resource
+								if _, ok := res[rule.Field]; !ok {
+									errs = append(errs, fmt.Sprintf("Missing required MessageHeader field: %s", rule.Field))
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Check references
+		resourceMap := map[string][]map[string]interface{}{}
+		for _, e := range entries {
+			if entry, ok := e.(map[string]interface{}); ok {
+				if res, ok := entry["resource"].(map[string]interface{}); ok {
+					if rt, ok := res["resourceType"].(string); ok {
+						resourceMap[rt] = append(resourceMap[rt], res)
+					}
+				}
+			}
+		}
+		
+		for _, rule := range recipe.MustReference {
+			valid := false
+			for _, src := range resourceMap[rule.Source] {
+				refs := collectReferences(src)
+				for _, r := range refs {
+					if strings.HasPrefix(r, rule.Target+"/") {
+						valid = true
+						break
+					}
+				}
+			}
+			if !valid {
+				errs = append(errs, fmt.Sprintf("No %s -> %s reference found in message", rule.Source, rule.Target))
+			}
+		}
+	}
+
+	return errs
+}
+
+func hasMessageHeader(entries []interface{}) bool {
+	for _, e := range entries {
+		if entry, ok := e.(map[string]interface{}); ok {
+			if res, ok := entry["resource"].(map[string]interface{}); ok {
+				if res["resourceType"] == "MessageHeader" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

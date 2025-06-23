@@ -787,6 +787,11 @@ func TestValidate(t *testing.T) {
 					"resource": map[string]interface{}{
 						"resourceType": "Provenance",
 						"id":           "prov1",
+						"target": []interface{}{
+							map[string]interface{}{
+								"reference": "Patient/pat1",
+							},
+						},
 					},
 				},
 			},
