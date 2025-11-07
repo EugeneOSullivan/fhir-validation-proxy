@@ -13,11 +13,14 @@ import (
 // ExtraRules holds additional validation rules loaded from YAML.
 var ExtraRules = map[string]map[string]FieldRule{}
 
+// CompiledPatterns caches compiled regex patterns for performance
+var CompiledPatterns = map[string]*regexp.Regexp{}
+var patternsMu sync.RWMutex
+
 // Cache for loaded rules to improve performance
 var (
-	rulesCache     = map[string]map[string]map[string]FieldRule{}
-	rulesCacheOnce sync.Once
-	rulesCacheMu   sync.RWMutex
+	rulesCache   = map[string]map[string]map[string]FieldRule{}
+	rulesCacheMu sync.RWMutex
 )
 
 // FieldRule represents a validation rule for a FHIR field.
@@ -76,6 +79,29 @@ func ClearRulesCache() {
 	defer rulesCacheMu.Unlock()
 	rulesCache = map[string]map[string]map[string]FieldRule{}
 	ExtraRules = map[string]map[string]FieldRule{}
+}
+
+// getCompiledPattern returns a compiled regex pattern, compiling if necessary
+func getCompiledPattern(pattern string) *regexp.Regexp {
+	patternsMu.RLock()
+	if re, ok := CompiledPatterns[pattern]; ok {
+		patternsMu.RUnlock()
+		return re
+	}
+	patternsMu.RUnlock()
+	
+	// Compile pattern
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil
+	}
+	
+	// Cache compiled pattern
+	patternsMu.Lock()
+	CompiledPatterns[pattern] = re
+	patternsMu.Unlock()
+	
+	return re
 }
 
 // ApplyExtraRules applies extra validation rules to a resource.
@@ -266,9 +292,9 @@ func fieldMatchesPattern(resource map[string]interface{}, fullPath string, patte
 				fmt.Printf("Field %s is not a string, got %T\n", part, val)
 				return false
 			}
-			re, err := regexp.Compile(pattern)
-			if err != nil {
-				fmt.Printf("Invalid pattern %s: %v\n", pattern, err)
+			re := getCompiledPattern(pattern)
+			if re == nil {
+				fmt.Printf("Invalid pattern %s\n", pattern)
 				return false
 			}
 			matches := re.MatchString(strVal)

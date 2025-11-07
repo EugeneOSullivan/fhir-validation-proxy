@@ -1,3 +1,4 @@
+// Package config provides configuration management for the FHIR validation proxy.
 package config
 
 import (
@@ -85,6 +86,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 
 	if configPath != "" {
+		// #nosec G304 -- configPath is controlled by caller and only YAML files are expected
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			return nil, err

@@ -1,10 +1,13 @@
+// Package proxy provides FHIR proxy functionality for forwarding requests and handling FHIR operations.
 package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -24,10 +27,19 @@ type FHIRProxy struct {
 
 // NewFHIRProxy creates a new FHIR proxy instance
 func NewFHIRProxy(cfg *config.Config) *FHIRProxy {
+	// Configure connection pooling for better performance
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DisableKeepAlives:   false,
+	}
+	
 	return &FHIRProxy{
 		config: cfg,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: transport,
 		},
 		baseURL: cfg.GetFHIRStoreURL(),
 	}
@@ -210,7 +222,7 @@ func (p *FHIRProxy) HandleProcessMessage(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Validate message bundle
-	if message["resourceType"] != "Bundle" {
+	if message["resourceType"] != validator.ResourceTypeBundle {
 		p.writeOperationOutcome(w, http.StatusBadRequest, "Message must be a Bundle")
 		return
 	}
@@ -236,14 +248,16 @@ func (p *FHIRProxy) HandleProcessMessage(w http.ResponseWriter, r *http.Request)
 		// Return success for validated message
 		w.Header().Set("Content-Type", "application/fhir+json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"resourceType": "OperationOutcome",
 			"issue": []map[string]interface{}{{
 				"severity":    "information",
 				"code":        "informational",
 				"diagnostics": "Message processed successfully",
 			}},
-		})
+		}); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -278,12 +292,14 @@ func (p *FHIRProxy) HandleCapabilityStatement(w http.ResponseWriter, r *http.Req
 
 		w.Header().Set("Content-Type", "application/fhir+json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(capability)
+		if err := json.NewEncoder(w).Encode(capability); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
 	}
 }
 
 // HealthCheck returns the health status of the proxy
-func (p *FHIRProxy) HealthCheck(w http.ResponseWriter, r *http.Request) {
+func (p *FHIRProxy) HealthCheck(w http.ResponseWriter, _ *http.Request) {
 	status := map[string]interface{}{
 		"status":    "healthy",
 		"timestamp": time.Now().Format(time.RFC3339),
@@ -291,20 +307,33 @@ func (p *FHIRProxy) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if p.baseURL != "" {
-		// Check upstream FHIR server health
-		resp, err := p.httpClient.Get(p.baseURL + "/metadata")
-		if err != nil || resp.StatusCode != http.StatusOK {
+		// Check upstream FHIR server health with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		
+		req, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/metadata", nil)
+		if err != nil {
 			status["status"] = "degraded"
 			status["upstream"] = "unavailable"
 		} else {
-			status["upstream"] = "healthy"
-			resp.Body.Close()
+			resp, err := p.httpClient.Do(req)
+			if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+				status["status"] = "degraded"
+				status["upstream"] = "unavailable"
+			} else {
+				status["upstream"] = "healthy"
+				if err := resp.Body.Close(); err != nil {
+					log.Printf("Failed to close response body: %v", err)
+				}
+			}
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(status)
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }
 
 // Helper methods
@@ -345,7 +374,9 @@ func (p *FHIRProxy) handleResourceCreate(w http.ResponseWriter, r *http.Request,
 		resource["id"] = fmt.Sprintf("generated-%d", time.Now().Unix())
 		w.Header().Set("Content-Type", "application/fhir+json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(resource)
+		if err := json.NewEncoder(w).Encode(resource); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -388,7 +419,9 @@ func (p *FHIRProxy) handleResourceUpdate(w http.ResponseWriter, r *http.Request,
 		resource["id"] = resourceID
 		w.Header().Set("Content-Type", "application/fhir+json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(resource)
+		if err := json.NewEncoder(w).Encode(resource); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -425,6 +458,8 @@ func (p *FHIRProxy) proxyRequest(w http.ResponseWriter, r *http.Request, targetU
 			p.writeOperationOutcome(w, http.StatusBadRequest, "Failed to read request body")
 			return
 		}
+		// Reset body for potential reuse
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		body = bytes.NewReader(bodyBytes)
 	}
 
@@ -434,8 +469,20 @@ func (p *FHIRProxy) proxyRequest(w http.ResponseWriter, r *http.Request, targetU
 		return
 	}
 
-	// Copy headers
+	// Copy headers (filter sensitive headers)
+	sensitiveHeaders := map[string]bool{
+		"Authorization":     true,
+		"X-Forwarded-For":   true,
+		"X-Forwarded-Proto": true,
+		"X-Forwarded-Host":  true,
+		"X-Real-Ip":         true,
+	}
+	
 	for key, values := range r.Header {
+		// Skip sensitive headers that should not be forwarded
+		if sensitiveHeaders[key] {
+			continue
+		}
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
@@ -444,10 +491,16 @@ func (p *FHIRProxy) proxyRequest(w http.ResponseWriter, r *http.Request, targetU
 	// Execute request
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		// Log error for debugging (structured logging would be better)
+		log.Printf("Proxy request failed: %v", err)
 		p.writeOperationOutcome(w, http.StatusBadGateway, "Failed to forward request to FHIR server")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Copy response headers
 	for key, values := range resp.Header {
@@ -457,7 +510,9 @@ func (p *FHIRProxy) proxyRequest(w http.ResponseWriter, r *http.Request, targetU
 	}
 
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		log.Printf("Failed to copy response body: %v", err)
+	}
 }
 
 func (p *FHIRProxy) writeValidationResult(w http.ResponseWriter, result validator.ValidationResult) {
@@ -467,24 +522,28 @@ func (p *FHIRProxy) writeValidationResult(w http.ResponseWriter, result validato
 	} else {
 		w.WriteHeader(http.StatusBadRequest)
 	}
-	json.NewEncoder(w).Encode(result.Outcome)
+	if err := json.NewEncoder(w).Encode(result.Outcome); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }
 
 func (p *FHIRProxy) writeOperationOutcome(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/fhir+json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"resourceType": "OperationOutcome",
 		"issue": []map[string]interface{}{{
 			"severity":    "error",
 			"code":        "invalid",
 			"diagnostics": message,
 		}},
-	})
+	}); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }
 
 // MetricsHandler provides validation metrics for monitoring
-func (p *FHIRProxy) MetricsHandler(w http.ResponseWriter, r *http.Request) {
+func (p *FHIRProxy) MetricsHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -499,5 +558,7 @@ func (p *FHIRProxy) MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		"uptime":              time.Since(metrics.LastRequestTime).String(),
 	}
 
-	json.NewEncoder(w).Encode(metricsData)
+	if err := json.NewEncoder(w).Encode(metricsData); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }

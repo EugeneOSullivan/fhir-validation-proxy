@@ -27,13 +27,25 @@ func TestLoadConfig(t *testing.T) {
 	})
 
 	t.Run("override with environment variables", func(t *testing.T) {
-		os.Setenv("PORT", "9090")
-		os.Setenv("GOOGLE_CLOUD_PROJECT", "test-project")
-		os.Setenv("VALIDATION_STRICT_MODE", "false")
+		if err := os.Setenv("PORT", "9090"); err != nil {
+			t.Fatalf("Failed to set PORT: %v", err)
+		}
+		if err := os.Setenv("GOOGLE_CLOUD_PROJECT", "test-project"); err != nil {
+			t.Fatalf("Failed to set GOOGLE_CLOUD_PROJECT: %v", err)
+		}
+		if err := os.Setenv("VALIDATION_STRICT_MODE", "false"); err != nil {
+			t.Fatalf("Failed to set VALIDATION_STRICT_MODE: %v", err)
+		}
 		defer func() {
-			os.Unsetenv("PORT")
-			os.Unsetenv("GOOGLE_CLOUD_PROJECT")
-			os.Unsetenv("VALIDATION_STRICT_MODE")
+			if err := os.Unsetenv("PORT"); err != nil {
+				t.Logf("Failed to unset PORT: %v", err)
+			}
+			if err := os.Unsetenv("GOOGLE_CLOUD_PROJECT"); err != nil {
+				t.Logf("Failed to unset GOOGLE_CLOUD_PROJECT: %v", err)
+			}
+			if err := os.Unsetenv("VALIDATION_STRICT_MODE"); err != nil {
+				t.Logf("Failed to unset VALIDATION_STRICT_MODE: %v", err)
+			}
 		}()
 
 		cfg, err := LoadConfig("")

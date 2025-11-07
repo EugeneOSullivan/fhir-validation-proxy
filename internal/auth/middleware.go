@@ -1,3 +1,4 @@
+// Package auth provides authentication and authorization middleware for the FHIR validation proxy.
 package auth
 
 import (
@@ -76,7 +77,9 @@ func (m *Middleware) AuthenticateRequest(next http.HandlerFunc) http.HandlerFunc
 		}
 
 		// Add user context to request
-		ctx := context.WithValue(r.Context(), "user", extractUserFromToken(token))
+		type contextKey string
+		const userContextKey contextKey = "user"
+		ctx := context.WithValue(r.Context(), userContextKey, extractUserFromToken(token))
 		r = r.WithContext(ctx)
 
 		next(w, r)
@@ -92,14 +95,14 @@ func (m *Middleware) validateToken(token string) bool {
 }
 
 // extractUserFromToken extracts user information from the token
-func extractUserFromToken(token string) string {
+func extractUserFromToken(_ string) string {
 	// TODO: Implement proper token parsing to extract user info
 	// For now, return a placeholder
 	return "authenticated-user"
 }
 
 // RequireScope middleware ensures the request has the required OAuth2 scope
-func (m *Middleware) RequireScope(scope string) func(http.HandlerFunc) http.HandlerFunc {
+func (m *Middleware) RequireScope(_ string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			// TODO: Implement scope validation

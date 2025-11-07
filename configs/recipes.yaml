@@ -89,3 +89,9 @@ message:
         required: true
       - field: focus
         required: true
+
+batch:
+  default:
+    requiredResources:
+      - resourceType: Patient
+        minCount: 1

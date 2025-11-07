@@ -21,7 +21,7 @@ func TestMiddleware(t *testing.T) {
 	t.Run("authenticate request - auth disabled", func(t *testing.T) {
 		middleware, _ := NewMiddleware("", false)
 
-		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, r *http.Request) {
+		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
@@ -41,7 +41,7 @@ func TestMiddleware(t *testing.T) {
 			t.Skip("Skipping test due to missing Google Cloud credentials")
 		}
 
-		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, r *http.Request) {
+		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
@@ -61,7 +61,7 @@ func TestMiddleware(t *testing.T) {
 			t.Skip("Skipping test due to missing Google Cloud credentials")
 		}
 
-		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, r *http.Request) {
+		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
@@ -82,7 +82,7 @@ func TestMiddleware(t *testing.T) {
 			t.Skip("Skipping test due to missing Google Cloud credentials")
 		}
 
-		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, r *http.Request) {
+		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
@@ -103,7 +103,7 @@ func TestMiddleware(t *testing.T) {
 			t.Skip("Skipping test due to missing Google Cloud credentials")
 		}
 
-		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, r *http.Request) {
+		handler := middleware.AuthenticateRequest(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
@@ -121,7 +121,7 @@ func TestMiddleware(t *testing.T) {
 	t.Run("audit log middleware", func(t *testing.T) {
 		middleware, _ := NewMiddleware("", false)
 
-		handler := middleware.AuditLog(func(w http.ResponseWriter, r *http.Request) {
+		handler := middleware.AuditLog(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
@@ -139,7 +139,7 @@ func TestMiddleware(t *testing.T) {
 		middleware, _ := NewMiddleware("", false)
 
 		scopeHandler := middleware.RequireScope("https://www.googleapis.com/auth/cloud-healthcare")
-		handler := scopeHandler(func(w http.ResponseWriter, r *http.Request) {
+		handler := scopeHandler(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 

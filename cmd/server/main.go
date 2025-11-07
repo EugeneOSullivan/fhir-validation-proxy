@@ -1,3 +1,4 @@
+// Package main provides the entry point for the FHIR validation proxy server.
 package main
 
 import (
@@ -38,6 +39,11 @@ func main() {
 	if err := validator.LoadRecipes(cfg.Validation.RecipesPath); err != nil {
 		log.Fatalf("Failed to load recipes: %v", err)
 	}
+
+	// Initialize reference data cache
+	// TTL: 1 hour, Max size: 10000 resources
+	validator.InitReferenceCache(1*time.Hour, 10000)
+	log.Println("Reference data cache initialized")
 
 	// Initialize authentication middleware
 	authMiddleware, err := auth.NewMiddleware(
@@ -86,11 +92,12 @@ func main() {
 
 	// Create HTTP server
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      router,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-		IdleTimeout:  cfg.Server.IdleTimeout,
+		Addr:              fmt.Sprintf(":%d", cfg.Server.Port),
+		Handler:           router,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		IdleTimeout:       cfg.Server.IdleTimeout,
 	}
 
 	// Start server in a goroutine
@@ -111,8 +118,9 @@ func main() {
 		metricsRouter := mux.NewRouter()
 		metricsRouter.Handle("/metrics", promhttp.Handler()).Methods("GET")
 		metricsSrv := &http.Server{
-			Addr:    fmt.Sprintf(":%d", cfg.Monitoring.MetricsPort),
-			Handler: metricsRouter,
+			Addr:              fmt.Sprintf(":%d", cfg.Monitoring.MetricsPort),
+			Handler:           metricsRouter,
+			ReadHeaderTimeout: 5 * time.Second,
 		}
 
 		go func() {
@@ -134,7 +142,9 @@ func main() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal("Server forced to shutdown:", err)
+		log.Printf("Server forced to shutdown: %v", err)
+		cancel()
+		return
 	}
 
 	log.Println("Server exited")

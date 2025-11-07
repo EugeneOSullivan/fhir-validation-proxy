@@ -6,6 +6,7 @@ package validator
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,22 +15,33 @@ const (
 	MaxRequestSize    = 10 * 1024 * 1024 // 10MB
 	MaxBundleEntries  = 1000
 	MaxValidationTime = 30 // seconds
+	ResourceTypeBundle = "Bundle"
 )
 
-// Simple metrics for enterprise monitoring
+// ValidationMetrics provides simple metrics for enterprise monitoring.
 type ValidationMetrics struct {
 	TotalRequests   int64
 	ValidRequests   int64
 	InvalidRequests int64
 	AverageDuration time.Duration
 	LastRequestTime time.Time
+	mu              sync.RWMutex
 }
 
 var metrics = &ValidationMetrics{}
 
-// GetMetrics returns current validation metrics
+// GetMetrics returns current validation metrics (thread-safe)
 func GetMetrics() *ValidationMetrics {
-	return metrics
+	metrics.mu.RLock()
+	defer metrics.mu.RUnlock()
+	// Return a copy to prevent external modification
+	return &ValidationMetrics{
+		TotalRequests:   metrics.TotalRequests,
+		ValidRequests:   metrics.ValidRequests,
+		InvalidRequests: metrics.InvalidRequests,
+		AverageDuration: metrics.AverageDuration,
+		LastRequestTime: metrics.LastRequestTime,
+	}
 }
 
 // ValidationResult represents the result of validating a FHIR resource.
@@ -45,14 +57,18 @@ type ValidationResult struct {
 func Validate(resource map[string]interface{}) ValidationResult {
 	start := time.Now()
 	defer func() {
+		metrics.mu.Lock()
 		metrics.TotalRequests++
 		metrics.LastRequestTime = time.Now()
+		metrics.mu.Unlock()
 	}()
 
 	// Enterprise security: Check resource size and limits
 	if err := validateResourceLimits(resource); err != nil {
 		duration := time.Since(start)
+		metrics.mu.Lock()
 		metrics.InvalidRequests++
+		metrics.mu.Unlock()
 		return ValidationResult{
 			Valid:  false,
 			Errors: []string{err.Error()},
@@ -72,14 +88,29 @@ func Validate(resource map[string]interface{}) ValidationResult {
 
 	errors := ApplyExtraRules(resource["resourceType"].(string), resource)
 
-	if resource["resourceType"] == "Bundle" && resource["type"] == "transaction" {
-		errors = append(errors, ValidateTransactionBundle(resource)...) // new logic
+	// Validate bundles based on type
+	if resource["resourceType"] == ResourceTypeBundle {
+		bundleType, ok := resource["type"].(string)
+		if ok {
+			switch bundleType {
+			case "transaction":
+				errors = append(errors, ValidateTransactionBundle(resource)...)
+			case "message":
+				errors = append(errors, ValidateMessageBundle(resource)...)
+			case "batch":
+				errors = append(errors, ValidateBatchBundle(resource)...)
+			default:
+				// Generic bundle validation
+				errors = append(errors, ValidateGenericBundle(resource)...)
+			}
+		}
 	}
 
 	valid := len(errors) == 0
 	duration := time.Since(start)
 
-	// Update metrics
+	// Update metrics (thread-safe)
+	metrics.mu.Lock()
 	if valid {
 		metrics.ValidRequests++
 	} else {
@@ -92,6 +123,7 @@ func Validate(resource map[string]interface{}) ValidationResult {
 	} else {
 		metrics.AverageDuration = duration
 	}
+	metrics.mu.Unlock()
 
 	outcome := map[string]interface{}{
 		"resourceType": "OperationOutcome",
@@ -131,7 +163,7 @@ func Validate(resource map[string]interface{}) ValidationResult {
 // validateResourceLimits checks enterprise-scale limits
 func validateResourceLimits(resource map[string]interface{}) error {
 	// Check bundle entry limits
-	if resource["resourceType"] == "Bundle" {
+	if resource["resourceType"] == ResourceTypeBundle {
 		if entries, ok := resource["entry"].([]interface{}); ok {
 			if len(entries) > MaxBundleEntries {
 				return fmt.Errorf("bundle contains too many entries: %d (max: %d)", len(entries), MaxBundleEntries)
@@ -162,81 +194,105 @@ func ValidateTransactionBundle(bundle map[string]interface{}) []string {
 
 	recipe, hasRecipe := Recipes["transaction:default"]
 	if hasRecipe {
-		found := map[string]bool{}
-		for _, e := range entries {
-			if entry, ok := e.(map[string]interface{}); ok {
-				if res, ok := entry["resource"].(map[string]interface{}); ok {
-					if rt, ok := res["resourceType"].(string); ok {
-						found[rt] = true
-					}
+		resourceCounts := countResourceTypes(entries)
+		errs = append(errs, validateRequiredResources(recipe, resourceCounts)...)
+		errs = append(errs, validateForbiddenResources(recipe, resourceCounts)...)
+		errs = append(errs, validateMustReference(recipe, entries)...)
+	}
+
+	errs = append(errs, validateReferences(entries, bundle)...)
+
+	return errs
+}
+
+// countResourceTypes counts occurrences of each resource type in bundle entries.
+func countResourceTypes(entries []interface{}) map[string]int {
+	resourceCounts := map[string]int{}
+	for _, e := range entries {
+		if entry, ok := e.(map[string]interface{}); ok {
+			if res, ok := entry["resource"].(map[string]interface{}); ok {
+				if rt, ok := res["resourceType"].(string); ok {
+					resourceCounts[rt]++
 				}
-			}
-		}
-		resourceCounts := map[string]int{}
-		for _, e := range entries {
-			if entry, ok := e.(map[string]interface{}); ok {
-				if res, ok := entry["resource"].(map[string]interface{}); ok {
-					if rt, ok := res["resourceType"].(string); ok {
-						resourceCounts[rt]++
-					}
-				}
-			}
-		}
-
-		for _, req := range recipe.RequiredResources {
-			count := resourceCounts[req.ResourceType]
-
-			minCount := req.MinCount
-			if minCount == 0 {
-				minCount = 1 // Default minimum is 1
-			}
-
-			if count < minCount {
-				errs = append(errs, fmt.Sprintf("Insufficient %s resources: found %d, minimum %d required",
-					req.ResourceType, count, minCount))
-			}
-
-			if req.MaxCount > 0 && count > req.MaxCount {
-				errs = append(errs, fmt.Sprintf("Too many %s resources: found %d, maximum %d allowed",
-					req.ResourceType, count, req.MaxCount))
-			}
-		}
-
-		// Check forbidden resources
-		for _, forbidden := range recipe.ForbiddenResources {
-			if resourceCounts[forbidden] > 0 {
-				errs = append(errs, fmt.Sprintf("Forbidden resource type in bundle: %s", forbidden))
-			}
-		}
-
-		// MustReference
-		resourceMap := map[string][]map[string]interface{}{}
-		for _, e := range entries {
-			if entry, ok := e.(map[string]interface{}); ok {
-				if res, ok := entry["resource"].(map[string]interface{}); ok {
-					if rt, ok := res["resourceType"].(string); ok {
-						resourceMap[rt] = append(resourceMap[rt], res)
-					}
-				}
-			}
-		}
-		for _, rule := range recipe.MustReference {
-			valid := false
-			for _, src := range resourceMap[rule.Source] {
-				refs := collectReferences(src)
-				for _, r := range refs {
-					if strings.HasPrefix(r, rule.Target+"/") {
-						valid = true
-						break
-					}
-				}
-			}
-			if !valid {
-				errs = append(errs, fmt.Sprintf("No %s -> %s reference found", rule.Source, rule.Target))
 			}
 		}
 	}
+	return resourceCounts
+}
 
+// validateRequiredResources validates required resource counts against recipe.
+func validateRequiredResources(recipe Recipe, resourceCounts map[string]int) []string {
+	errs := []string{}
+	for _, req := range recipe.RequiredResources {
+		count := resourceCounts[req.ResourceType]
+		minCount := req.MinCount
+		if minCount == 0 {
+			minCount = 1 // Default minimum is 1
+		}
+
+		if count < minCount {
+			errs = append(errs, fmt.Sprintf("Insufficient %s resources: found %d, minimum %d required",
+				req.ResourceType, count, minCount))
+		}
+
+		if req.MaxCount > 0 && count > req.MaxCount {
+			errs = append(errs, fmt.Sprintf("Too many %s resources: found %d, maximum %d allowed",
+				req.ResourceType, count, req.MaxCount))
+		}
+	}
+	return errs
+}
+
+// validateForbiddenResources validates that forbidden resources are not present.
+func validateForbiddenResources(recipe Recipe, resourceCounts map[string]int) []string {
+	errs := []string{}
+	for _, forbidden := range recipe.ForbiddenResources {
+		if resourceCounts[forbidden] > 0 {
+			errs = append(errs, fmt.Sprintf("Forbidden resource type in bundle: %s", forbidden))
+		}
+	}
+	return errs
+}
+
+// validateMustReference validates that required references exist.
+func validateMustReference(recipe Recipe, entries []interface{}) []string {
+	errs := []string{}
+	resourceMap := buildResourceMap(entries)
+	for _, rule := range recipe.MustReference {
+		valid := false
+		for _, src := range resourceMap[rule.Source] {
+			refs := collectReferences(src)
+			for _, r := range refs {
+				if strings.HasPrefix(r, rule.Target+"/") {
+					valid = true
+					break
+				}
+			}
+		}
+		if !valid {
+			errs = append(errs, fmt.Sprintf("No %s -> %s reference found", rule.Source, rule.Target))
+		}
+	}
+	return errs
+}
+
+// buildResourceMap builds a map of resource types to their resources.
+func buildResourceMap(entries []interface{}) map[string][]map[string]interface{} {
+	resourceMap := map[string][]map[string]interface{}{}
+	for _, e := range entries {
+		if entry, ok := e.(map[string]interface{}); ok {
+			if res, ok := entry["resource"].(map[string]interface{}); ok {
+				if rt, ok := res["resourceType"].(string); ok {
+					resourceMap[rt] = append(resourceMap[rt], res)
+				}
+			}
+		}
+	}
+	return resourceMap
+}
+
+// validateReferences validates that all references in entries exist in the bundle.
+func validateReferences(entries []interface{}, bundle map[string]interface{}) []string {
 	allRefs := []string{}
 	for _, e := range entries {
 		if entry, ok := e.(map[string]interface{}); ok {
@@ -247,10 +303,10 @@ func ValidateTransactionBundle(bundle map[string]interface{}) []string {
 	}
 
 	missing := referencesExist(allRefs, bundle)
+	errs := []string{}
 	for _, ref := range missing {
 		errs = append(errs, "Unresolved reference: "+ref)
 	}
-
 	return errs
 }
 
@@ -265,6 +321,68 @@ func hasProvenance(entries []interface{}) bool {
 		}
 	}
 	return false
+}
+
+// ValidateBatchBundle validates a batch bundle
+func ValidateBatchBundle(bundle map[string]interface{}) []string {
+	errs := []string{}
+	
+	entries, ok := bundle["entry"].([]interface{})
+	if !ok {
+		return []string{"Invalid or missing bundle entries"}
+	}
+	
+	// Batch bundles have different validation rules than transaction bundles
+	// They don't require Provenance, but may have other requirements
+	recipe, hasRecipe := Recipes["batch:default"]
+	if hasRecipe {
+		resourceCounts := map[string]int{}
+		for _, e := range entries {
+			if entry, ok := e.(map[string]interface{}); ok {
+				if res, ok := entry["resource"].(map[string]interface{}); ok {
+					if rt, ok := res["resourceType"].(string); ok {
+						resourceCounts[rt]++
+					}
+				}
+			}
+		}
+		
+		for _, req := range recipe.RequiredResources {
+			count := resourceCounts[req.ResourceType]
+			minCount := req.MinCount
+			if minCount == 0 {
+				minCount = 1
+			}
+			
+			if count < minCount {
+				errs = append(errs, fmt.Sprintf("Insufficient %s resources in batch: found %d, minimum %d required",
+					req.ResourceType, count, minCount))
+			}
+			
+			if req.MaxCount > 0 && count > req.MaxCount {
+				errs = append(errs, fmt.Sprintf("Too many %s resources in batch: found %d, maximum %d allowed",
+					req.ResourceType, count, req.MaxCount))
+			}
+		}
+	}
+	
+	return errs
+}
+
+// ValidateGenericBundle validates a generic bundle (no specific type)
+func ValidateGenericBundle(bundle map[string]interface{}) []string {
+	errs := []string{}
+	
+	entries, ok := bundle["entry"].([]interface{})
+	if !ok {
+		return []string{"Invalid or missing bundle entries"}
+	}
+	
+	if len(entries) == 0 {
+		errs = append(errs, "Bundle must contain at least one entry")
+	}
+	
+	return errs
 }
 
 func collectReferences(resource map[string]interface{}) []string {

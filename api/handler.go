@@ -56,7 +56,7 @@ func ValidateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // HealthCheckHandler provides health status for load balancers and monitoring
-func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
+func HealthCheckHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -67,11 +67,13 @@ func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 		"version":   "1.0.0",
 	}
 
-	json.NewEncoder(w).Encode(health)
+	if err := json.NewEncoder(w).Encode(health); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }
 
 // MetricsHandler provides validation metrics for monitoring
-func MetricsHandler(w http.ResponseWriter, r *http.Request) {
+func MetricsHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -86,7 +88,9 @@ func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 		"uptime":              time.Since(metrics.LastRequestTime).String(),
 	}
 
-	json.NewEncoder(w).Encode(metricsData)
+	if err := json.NewEncoder(w).Encode(metricsData); err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	}
 }
 
 func writeOperationOutcome(w http.ResponseWriter, status int, message string) {
